@@ -1,5 +1,4 @@
 # NewsPulse
-https://chatgpt.com/share/68a60959-245c-8007-8866-c144eb3aaa94
 
 
 # 📰  **NewsPulse: Real-Time News Aggregator & Recommendation Platform**
@@ -95,5 +94,3 @@ newspulse/
 
 ---
 
-👉 Suggested Name: **NewsPulse DevOps
-Sara, do you want me to **add this NewsPulse project** to your canvas with full step-by-step details (like I did for TraceLogix), or keep it as a separate project doc?
