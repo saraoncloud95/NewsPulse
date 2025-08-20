@@ -1,4 +1,5 @@
 # NewsPulse
+https://chatgpt.com/share/68a60959-245c-8007-8866-c144eb3aaa94
 
 
 # 📰  **NewsPulse: Real-Time News Aggregator & Recommendation Platform**
