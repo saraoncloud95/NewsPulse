@@ -1,7 +1,7 @@
 # NewsPulse
 
 
-# 📰 Project 4 — **NewsPulse: Real-Time News Aggregator & Recommendation Platform**
+# 📰  **NewsPulse: Real-Time News Aggregator & Recommendation Platform**
 
 ### 🎯 Goal
 
