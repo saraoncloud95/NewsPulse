@@ -115,6 +115,7 @@ newspulse/
    * Output kubeconfig so you can connect via `kubectl`.
 
 4. **RDS (Postgres)**
+<img width="1538" height="236" alt="Screenshot from 2025-08-22 11-25-44" src="https://github.com/user-attachments/assets/0797175c-e270-43f7-b002-02f4ebf2ccf6" />
 
    * Create RDS Postgres instance (db.t3.medium is fine for demo).
    * Place in private subnets.
