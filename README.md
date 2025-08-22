@@ -246,7 +246,569 @@ This combination ensures the platform is both accessible and trustworthy to user
 
 Step 1 lays down the **infrastructure backbone** of NewsPulse. With networking, compute, storage, and streaming in place, the system has the essential building blocks for scalability, reliability, and security. Subsequent steps will build on this foundation — deploying ingestion pipelines, processors, APIs, and frontend applications with confidence.
 
+
+
 ---
+
+## ✅ Step 2: Install and Configure EKS Add-ons
+
+Once the VPC, EKS, RDS, S3, Kinesis, and other resources are provisioned, the cluster itself needs its **core operational tools**:
+
+1. **ArgoCD (GitOps Engine)**
+<img width="1818" height="1047" alt="Screenshot from 2025-08-22 11-39-45" src="https://github.com/user-attachments/assets/198f1fbd-e066-48b4-9796-696ab3b9373a" />
+
+
+   * Manage application deployments declaratively.
+   * Sync Helm/Kustomize manifests from Git → EKS automatically.
+
+3. **External Secrets Operator (ESO)**
+
+   * Sync secrets from **AWS Secrets Manager** into Kubernetes.
+   * Ensures no hardcoded secrets inside manifests.
+
+4. **Ingress Controller (AWS Load Balancer Controller)**
+
+   * Needed for routing traffic from ALB → Kubernetes services.
+   * Works with Route53 + ACM certificates (from Step 1).
+
+5. **Prometheus + Grafana + Alertmanager**
+
+   * **Prometheus**: Collects cluster & app metrics.
+   * **Grafana**: Visualizes dashboards (API latency, ingestion lag, CPU usage).
+   * **Alertmanager**: Notifies on incidents (e.g., Slack, email, OpsGenie).
+
+6. **OpenTelemetry Agent**
+
+   * Collect traces/logs from services.
+   * Helps debug latency across ingestion → processing → API chain.
+
+---
+
+## 🎯 End of Step 2 Goals
+
+* GitOps fully functional → any manifest update in Git automatically applies to EKS.
+* Secrets flow securely from AWS Secrets Manager to pods.
+* Monitoring dashboards visible in Grafana.
+* Ingress works → test domain resolves to EKS service.
+
+
+---
+
+# Step 2 — EKS Add-ons & Observability (Hands-on)
+
+> Replace the placeholders:
+>
+> * `CLUSTER_NAME`, `AWS_REGION`, `ACCOUNT_ID`
+> * `DOMAIN= new spulse.dev` (example)
+> * `CERT_ARN` (ACM cert for `*.${DOMAIN}` in the same region as your ALB)
+
+## 0) Prereqs
+
+```bash
+aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+kubectl get nodes
+kubectl create namespace ops || true
+kubectl create namespace platform || true
+kubectl create namespace monitoring || true
+kubectl create namespace argocd || true
+```
+
+---
+
+## 1) ArgoCD (GitOps)
+
+### Install (Helm)
+
+```bash
+helm repo add argo https://argoproj.github.io/argo-helm
+helm repo update
+helm upgrade --install argocd argo/argo-cd \
+  --namespace argocd \
+  --set server.extraArgs="{--insecure}" \
+  --set configs.params."server\\.insecure"=true
+```
+
+### Get initial admin password
+
+```bash
+kubectl -n argocd get secret argocd-initial-admin-secret \
+  -o jsonpath="{.data.password}" | base64 -d; echo
+```
+
+### Expose ArgoCD via ALB (Ingress)
+
+> Requires AWS Load Balancer Controller (section 3). If not installed yet, skip and come back.
+
+```yaml
+# argocd/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argocd
+  namespace: argocd
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/certificate-arn: CERT_ARN
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+spec:
+  rules:
+  - host: argocd.${DOMAIN}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: argocd-server
+            port: 
+              number: 80
+```
+
+```bash
+kubectl apply -f argocd/ingress.yaml
+```
+
+### App-of-Apps (GitOps root)
+
+Create a **root** application so ArgoCD manages everything else from your Git repo.
+
+```yaml
+# argocd/root-app.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: newspulse-root
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/<your-org>/newspulse.git
+    targetRevision: main
+    path: ops/apps
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+```
+
+```bash
+kubectl apply -f argocd/root-app.yaml
+```
+
+**Repo suggestion**
+
+```
+ops/
+  apps/                # App-of-apps kustomization or App manifests
+  base/                # Helm charts / Kustomize bases
+  overlays/{dev,stg,prod}/
+```
+
+---
+
+## 2) External Secrets Operator (Sync from AWS Secrets Manager)
+
+### Install ESO
+
+```bash
+helm repo add external-secrets https://charts.external-secrets.io
+helm repo update
+helm upgrade --install external-secrets external-secrets/external-secrets \
+  --namespace platform --create-namespace
+```
+
+### IRSA for ESO (allow read from Secrets Manager)
+
+Create an IAM policy that lets ESO read specific secrets (least privilege). Example inline policy name: `ESOReadSecrets`.
+
+```bash
+cat > es-irsa-policy.json <<'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": [
+      "secretsmanager:GetSecretValue",
+      "secretsmanager:DescribeSecret",
+      "secretsmanager:ListSecretVersionIds"
+    ],
+    "Resource": [
+      "arn:aws:secretsmanager:*:*:secret:newspulse/*"
+    ]
+  }]
+}
+EOF
+
+aws iam create-policy --policy-name ESOReadSecrets \
+  --policy-document file://es-irsa-policy.json
+```
+
+Create service account with IRSA (adjust OIDC and policy ARN):
+
+```bash
+OIDC_PROVIDER=$(aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION \
+  --query "cluster.identity.oidc.issuer" --output text | sed -e 's#https://##')
+
+helm upgrade --install eso-aws external-secrets/external-secrets \
+  --namespace platform \
+  --set installCRDs=true \
+  --set serviceAccount.create=true \
+  --set serviceAccount.name=eso-sa \
+  --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=arn:aws:iam::$ACCOUNT_ID:role/eso-irsa-role"
+```
+
+Create the role and attach the policy:
+
+```bash
+cat > trust-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Federated": "arn:aws:iam::$ACCOUNT_ID:oidc-provider/$OIDC_PROVIDER"},
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "$OIDC_PROVIDER:sub": "system:serviceaccount:platform:eso-sa"
+      }
+    }
+  }]
+}
+EOF
+
+aws iam create-role --role-name eso-irsa-role --assume-role-policy-document file://trust-policy.json
+aws iam attach-role-policy --role-name eso-irsa-role --policy-arn arn:aws:iam::$ACCOUNT_ID:policy/ESOReadSecrets
+```
+
+### External Secret example (pull DB creds)
+
+```yaml
+# platform/db-secret.yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: rds-app-creds
+  namespace: platform
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: aws-secrets
+  target:
+    name: rds-app
+    creationPolicy: Owner
+  data:
+  - secretKey: username
+    remoteRef:
+      key: newspulse/rds/app
+      property: username
+  - secretKey: password
+    remoteRef:
+      key: newspulse/rds/app
+      property: password
+```
+
+Create the store (to AWS SM):
+
+```yaml
+# platform/clustersecretstore.yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ClusterSecretStore
+metadata:
+  name: aws-secrets
+spec:
+  provider:
+    aws:
+      service: SecretsManager
+      region: AWS_REGION
+      auth:
+        jwt:
+          serviceAccountRef:
+            name: eso-sa
+            namespace: platform
+```
+
+```bash
+kubectl apply -f platform/clustersecretstore.yaml
+kubectl apply -f platform/db-secret.yaml
+kubectl -n platform get secret rds-app -o yaml
+```
+
+---
+
+## 3) AWS Load Balancer Controller (Ingress → ALB)
+
+### IRSA + Install
+
+```bash
+helm repo add eks https://aws.github.io/eks-charts
+helm repo update
+
+# IAM policy
+curl -o alb-iam-policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
+aws iam create-policy --policy-name AWSLoadBalancerControllerIAMPolicy \
+  --policy-document file://alb-iam-policy.json
+
+# Service account w/ IRSA
+kubectl create namespace kube-system --dry-run=client -o yaml | kubectl apply -f -
+eksctl create iamserviceaccount \
+  --name aws-load-balancer-controller \
+  --namespace kube-system \
+  --cluster $CLUSTER_NAME \
+  --attach-policy-arn arn:aws:iam::$ACCOUNT_ID:policy/AWSLoadBalancerControllerIAMPolicy \
+  --approve \
+  --region $AWS_REGION
+
+# Install chart
+helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+  -n kube-system \
+  --set clusterName=$CLUSTER_NAME \
+  --set region=$AWS_REGION \
+  --set vpcId=$(aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION --query "cluster.resourcesVpcConfig.vpcId" --output text) \
+  --set serviceAccount.create=false \
+  --set serviceAccount.name=aws-load-balancer-controller
+```
+
+**Health check**
+
+```bash
+kubectl -n kube-system rollout status deploy/aws-load-balancer-controller
+```
+
+---
+
+## 4) Ingress test (Hello service)
+
+```yaml
+# ops/base/hello/deploy.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello
+  namespace: ops
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: hello } }
+  template:
+    metadata: { labels: { app: hello } }
+    spec:
+      containers:
+      - name: hello
+        image: public.ecr.aws/nginx/nginx:latest
+        ports: [{ containerPort: 80 }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello
+  namespace: ops
+spec:
+  selector: { app: hello }
+  ports: [{ port: 80, targetPort: 80 }]
+```
+
+```yaml
+# ops/base/hello/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hello
+  namespace: ops
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/certificate-arn: CERT_ARN
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+spec:
+  rules:
+  - host: hello.${DOMAIN}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: hello
+            port:
+              number: 80
+```
+
+```bash
+kubectl apply -f ops/base/hello/deploy.yaml
+kubectl apply -f ops/base/hello/ingress.yaml
+# After ALB provision, create DNS record in Route53 to the ALB hostname → hello.${DOMAIN}
+```
+
+---
+
+## 5) Monitoring — kube-prometheus-stack (Prometheus, Grafana, Alertmanager)
+
+### Install
+
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+
+helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --set grafana.adminPassword='Admin123!' \
+  --set grafana.ingress.enabled=true \
+  --set grafana.ingress.ingressClassName=alb \
+  --set grafana.ingress.annotations."alb\.ingress\.kubernetes\.io/scheme"=internet-facing \
+  --set grafana.ingress.annotations."alb\.ingress\.kubernetes\.io/target-type"=ip \
+  --set grafana.ingress.annotations."alb\.ingress\.kubernetes\.io/listen-ports"='[{"HTTP":80},{"HTTPS":443}]' \
+  --set grafana.ingress.annotations."alb\.ingress\.kubernetes\.io/certificate-arn"=CERT_ARN \
+  --set grafana.ingress.annotations."alb\.ingress\.kubernetes\.io/ssl-redirect"='443' \
+  --set grafana.ingress.hosts="{grafana.${DOMAIN}}" \
+  --set prometheus.ingress.enabled=true \
+  --set prometheus.ingress.ingressClassName=alb \
+  --set prometheus.ingress.annotations."alb\.ingress\.kubernetes\.io/scheme"=internet-facing \
+  --set prometheus.ingress.annotations."alb\.ingress\.kubernetes\.io/target-type"=ip \
+  --set prometheus.ingress.annotations."alb\.ingress\.kubernetes\.io/listen-ports"='[{"HTTP":80},{"HTTPS":443}]' \
+  --set prometheus.ingress.annotations."alb\.ingress\.kubernetes\.io/certificate-arn"=CERT_ARN \
+  --set prometheus.ingress.annotations."alb\.ingress\.kubernetes\.io/ssl-redirect"='443' \
+  --set prometheus.ingress.hosts="{prometheus.${DOMAIN}}"
+```
+
+### Dashboards to import
+
+* **Kubernetes / Compute Resources / Namespace, Pod**
+* **Node Exporter / Nodes**
+* **NGINX or ALB** (if you export metrics)
+* Later: custom dashboards for **API latency**, **Kinesis lag**, **processor throughput**.
+
+---
+
+## 6) OpenTelemetry Collector (Traces/Logs)
+
+```yaml
+# monitoring/otel-collector.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: monitoring
+data:
+  otel-collector-config.yaml: |
+    receivers:
+      otlp:
+        protocols: { http: {}, grpc: {} }
+    exporters:
+      logging: {}
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          exporters: [logging]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: otel-collector } }
+  template:
+    metadata: { labels: { app: otel-collector } }
+    spec:
+      containers:
+      - name: otel-collector
+        image: otel/opentelemetry-collector:latest
+        args: ["--config=/conf/otel-collector-config.yaml"]
+        volumeMounts:
+          - name: config
+            mountPath: /conf
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+            items:
+              - key: otel-collector-config.yaml
+                path: otel-collector-config.yaml
+```
+
+```bash
+kubectl apply -f monitoring/otel-collector.yaml
+```
+
+Update your API/processor later to export OTLP → `otel-collector.monitoring:4317`.
+
+---
+
+## 7) Alerting (quick start)
+
+Example: **High 5xx on ingress service** (PrometheusRule):
+
+```yaml
+# monitoring/alerts-5xx.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: ingress-5xx
+  namespace: monitoring
+spec:
+  groups:
+  - name: ingress.rules
+    rules:
+    - alert: HighIngress5xx
+      expr: sum(rate(nginx_ingress_controller_requests{status=~"5.."}[5m])) > 5
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High 5xx rate on Ingress"
+        description: "Ingress 5xx rate > 5 rps for 10m"
+```
+
+```bash
+kubectl apply -f monitoring/alerts-5xx.yaml
+```
+
+(Configure Alertmanager to route to Slack/Email later.)
+
+---
+
+## 8) Validation Checklist
+
+```bash
+# ArgoCD
+kubectl -n argocd get pods
+# ESO secret synced
+kubectl -n platform get externalsecret,secrets
+# ALB controller healthy
+kubectl -n kube-system get deploy aws-load-balancer-controller
+# Ingress working
+kubectl -n ops get ingress
+# Monitoring stack
+kubectl -n monitoring get pods,ingress
+```
+
+* Visit:
+
+  * `https://argocd.${DOMAIN}`
+  * `https://grafana.${DOMAIN}`
+  * `https://hello.${DOMAIN}`
+
+---
+
+## 9) Production Notes
+
+* **Network policies**: add Calico/Cilium and restrict namespace egress where possible.
+* **WAF**: attach AWS WAF to the ALB for API protection (SQLi/XSS managed rules).
+* **TLS**: use your ACM wildcard, rotate yearly; consider cert-manager if you ever move to non-ALB ingress.
+* **RBAC**: read-only roles for Grafana/ArgoCD viewers.
+* **Backups**: Prometheus snapshots, Grafana dashboards exported to Git.
+
+---
+
 
 
 
