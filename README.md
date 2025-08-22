@@ -100,39 +100,50 @@ newspulse/
 
 1. **VPC & Networking**
 
+   <img width="999" height="161" alt="Screenshot from 2025-08-22 11-08-58" src="https://github.com/user-attachments/assets/ed13ad2e-e71f-4563-a00c-0be2ef4cb9b4" />
+
+
    * Create a VPC with public/private subnets across 2 AZs.
    * Add Internet Gateway + NAT Gateway.
    * Security groups for ALB, EKS nodes, and RDS.
 
-2. **EKS Cluster**
+3. **EKS Cluster**
+<img width="1554" height="258" alt="Screenshot from 2025-08-22 11-09-49" src="https://github.com/user-attachments/assets/3fa1977c-e1e6-4e95-82ea-8fb4830d3948" />
 
    * Spin up an EKS cluster with at least 2 node groups (one for system workloads, one for apps).
    * Enable IAM OIDC provider (needed for IRSA later).
    * Output kubeconfig so you can connect via `kubectl`.
 
-3. **RDS (Postgres)**
+4. **RDS (Postgres)**
 
    * Create RDS Postgres instance (db.t3.medium is fine for demo).
    * Place in private subnets.
    * Store creds in AWS Secrets Manager.
 
-4. **S3 Buckets**
+5. **S3 Buckets**
+<img width="1048" height="258" alt="Screenshot from 2025-08-22 11-10-33" src="https://github.com/user-attachments/assets/8817548d-3efb-4125-b834-1a557fbf191d" />
 
    * `news-raw` (store original articles).
    * `news-analytics` (store Athena query data).
    * Enable versioning + lifecycle policies.
 
-5. **Kinesis Stream**
+6. **Kinesis Stream**
+<img width="1564" height="263" alt="Screenshot from 2025-08-22 11-11-05" src="https://github.com/user-attachments/assets/d32c441a-2991-4895-b896-9ef9f36f583a" />
 
    * Create a stream (`news-ingestion`) with 1–2 shards for now.
    * This will be the pipeline between ingestion Lambda and processor service.
 
-6. **ECR Repository**
+7. **ECR Repository**
+<img width="1497" height="344" alt="Screenshot from 2025-08-22 11-11-47" src="https://github.com/user-attachments/assets/dc722d64-a9a1-43d7-a254-f8441eba29d8" />
 
    * Create repos for `api`, `processor`, and `frontend`.
    * Used by Jenkins CI.
 
-7. **Route53 + ACM**
+8. **Route53 + ACM**
+<img width="1531" height="345" alt="Screenshot from 2025-08-22 11-12-17" src="https://github.com/user-attachments/assets/5da93c4e-c1d3-4527-ad23-5bb33f6add37" />
+
+<img width="1531" height="345" alt="Screenshot from 2025-08-22 11-12-47" src="https://github.com/user-attachments/assets/cd5257f4-90c1-4e82-b365-fd644412081c" />
+
 
    * Set up domain `newspulse.dev` (or subdomain if you have one).
    * Request ACM TLS cert for `*.newspulse.dev`.
