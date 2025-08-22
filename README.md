@@ -260,6 +260,8 @@ Once the VPC, EKS, RDS, S3, Kinesis, and other resources are provisioned, the cl
 
    * Manage application deployments declaratively.
    * Sync Helm/Kustomize manifests from Git → EKS automatically.
+     <img width="1851" height="865" alt="Screenshot from 2025-08-22 11-46-29" src="https://github.com/user-attachments/assets/c087e628-ff25-4684-ab5f-b6437b692c0e" />
+
 
 3. **External Secrets Operator (ESO)**
 
