@@ -1,4 +1,5 @@
 # NewsPulse
+<img width="1691" height="1610" alt="newspulse" src="https://github.com/user-attachments/assets/32f0f4d4-6f3b-44a0-beef-3625410c1c63" />
 
 
 # 📰  **NewsPulse: Real-Time News Aggregator & Recommendation Platform**
@@ -93,4 +94,149 @@ newspulse/
 6. Trigger RDS restore drill → rotate secret → service recovers
 
 ---
+Great question 👍 For **NewsPulse**, the **first step** is to set up the **infrastructure foundation** (Day 1). Without a solid base, you can’t build ingestion, processing, or serving layers.
+
+---
+
+## ✅ Step 1: Provision Core Infrastructure with Terraform
+
+1. **VPC & Networking**
+
+   * Create a VPC with public/private subnets across 2 AZs.
+   * Add Internet Gateway + NAT Gateway.
+   * Security groups for ALB, EKS nodes, and RDS.
+
+2. **EKS Cluster**
+
+   * Spin up an EKS cluster with at least 2 node groups (one for system workloads, one for apps).
+   * Enable IAM OIDC provider (needed for IRSA later).
+   * Output kubeconfig so you can connect via `kubectl`.
+
+3. **RDS (Postgres)**
+
+   * Create RDS Postgres instance (db.t3.medium is fine for demo).
+   * Place in private subnets.
+   * Store creds in AWS Secrets Manager.
+
+4. **S3 Buckets**
+
+   * `news-raw` (store original articles).
+   * `news-analytics` (store Athena query data).
+   * Enable versioning + lifecycle policies.
+
+5. **Kinesis Stream**
+
+   * Create a stream (`news-ingestion`) with 1–2 shards for now.
+   * This will be the pipeline between ingestion Lambda and processor service.
+
+6. **ECR Repository**
+
+   * Create repos for `api`, `processor`, and `frontend`.
+   * Used by Jenkins CI.
+
+7. **Route53 + ACM**
+
+   * Set up domain `newspulse.dev` (or subdomain if you have one).
+   * Request ACM TLS cert for `*.newspulse.dev`.
+
+
+---
+
+# Step 1: Building the Core Infrastructure for NewsPulse
+
+## Introduction
+
+Every successful digital platform begins with a strong foundation. For **NewsPulse**, a real-time news aggregator and recommendation system, this foundation is built on a set of core AWS services that ensure security, scalability, and reliability. Step 1 focuses on establishing the **networking, compute, storage, and streaming backbone** of the system before moving to application development.
+
+---
+
+## 1. Virtual Private Cloud (VPC) & Networking
+
+A dedicated **VPC** provides a secure, isolated environment for all application components.
+
+* **Public subnets** host the Application Load Balancer (ALB) and NAT Gateway.
+* **Private subnets** contain sensitive resources such as the RDS database and EKS worker nodes.
+* **Security groups** enforce least-privilege access, ensuring services only communicate where explicitly required.
+
+This separation of concerns creates a secure perimeter, protecting the database and backend from direct internet exposure.
+
+---
+
+## 2. Amazon EKS (Elastic Kubernetes Service)
+
+EKS is the compute backbone for NewsPulse. It allows containerized services — such as the API, processor, and frontend — to run with resilience and scalability.
+
+* **Node groups** are divided between **system workloads** (monitoring, ingress controllers) and **application workloads** (API, processors).
+* **IAM OIDC provider** is enabled to support IRSA (IAM Roles for Service Accounts), ensuring fine-grained, pod-level access to AWS services.
+
+This approach future-proofs the system, enabling GitOps, automated scaling, and canary deployments.
+
+---
+
+## 3. Amazon RDS (Postgres)
+
+News metadata, user profiles, and recommendation data are stored in **Amazon RDS (PostgreSQL)**.
+
+* Fully managed service ensures **automated backups, patching, and failover**.
+* Hosted in **private subnets** for security.
+* Credentials are stored in **AWS Secrets Manager**, preventing hardcoding in code or configs.
+
+The relational structure allows complex queries (e.g., “top articles in the last 24 hours per region”) with high efficiency.
+
+---
+
+## 4. Amazon S3 Buckets
+
+Unstructured and analytical data flows into Amazon S3.
+
+* **`news-raw` bucket**: Stores full articles and original content for archival and potential reprocessing.
+* **`news-analytics` bucket**: Holds processed results, query logs, and Athena-compatible datasets.
+* **Lifecycle policies** move older data to **Glacier**, minimizing cost while retaining history.
+
+This provides a highly durable, cost-optimized storage layer.
+
+---
+
+## 5. Amazon Kinesis Data Stream
+
+Real-time ingestion is powered by **Kinesis Data Streams**.
+
+* Articles fetched by Lambda (ingestor) are published to the stream.
+* A **processor service** consumes from the stream, calling **AWS Comprehend** for sentiment and entity tagging.
+* The stream provides **buffering and decoupling**, ensuring no data loss during traffic spikes (e.g., breaking news events).
+
+This ensures resilience and smooth handling of high-volume data pipelines.
+
+---
+
+## 6. Amazon ECR (Elastic Container Registry)
+
+ECR serves as the **container image repository** for the project.
+
+* Holds Docker images for the **API**, **processor**, and **frontend**.
+* Integrated with **Jenkins CI/CD**, enabling build, scan, and push workflows.
+* Secure IAM policies ensure only authorized pipelines and EKS nodes can pull images.
+
+This guarantees a clean, auditable supply chain for application deployment.
+
+---
+
+## 7. Route53 & ACM (Domain & Security)
+
+To provide a professional, secure experience, Route53 and ACM are configured:
+
+* **Route53** manages DNS for `newspulse.dev` and subdomains (`api.newspulse.dev`, `app.newspulse.dev`).
+* **ACM (AWS Certificate Manager)** issues TLS certificates for end-to-end HTTPS encryption.
+
+This combination ensures the platform is both accessible and trustworthy to users.
+
+---
+
+## Conclusion
+
+Step 1 lays down the **infrastructure backbone** of NewsPulse. With networking, compute, storage, and streaming in place, the system has the essential building blocks for scalability, reliability, and security. Subsequent steps will build on this foundation — deploying ingestion pipelines, processors, APIs, and frontend applications with confidence.
+
+---
+
+
 
