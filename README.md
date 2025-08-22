@@ -93,8 +93,6 @@ newspulse/
 5. Deploy faulty build with Argo Rollouts → canary catches error, rollback
 6. Trigger RDS restore drill → rotate secret → service recovers
 
----
-Great question 👍 For **NewsPulse**, the **first step** is to set up the **infrastructure foundation** (Day 1). Without a solid base, you can’t build ingestion, processing, or serving layers.
 
 ---
 
